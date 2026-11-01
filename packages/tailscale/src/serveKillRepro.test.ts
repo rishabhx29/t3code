@@ -68,7 +68,7 @@ it.layer(NodeServices.layer)("tailscale serve kill repro", (it) => {
         // The serve call's own 10 s timeout interrupts it and runs the spawner's
         // cleanup: SIGTERM to the process group, then — with forceKillAfter —
         // SIGKILL after the grace.
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           ensureTailscaleServe({ localPort: 45_678 }).pipe(Effect.result),
         );
 
