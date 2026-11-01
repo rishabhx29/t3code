@@ -71,6 +71,8 @@ it.layer(NodeServices.layer)("tailscale serve kill repro", (it) => {
         const fiber = yield* Effect.forkChild(
           ensureTailscaleServe({ localPort: 45_678 }).pipe(Effect.result),
         );
+        // @effect-diagnostics-next-line globalConsoleInEffect:off -- diagnostics for the live repro
+        console.log("repro: serve forked");
 
         yield* Effect.promise(() =>
           expect
@@ -81,6 +83,8 @@ it.layer(NodeServices.layer)("tailscale serve kill repro", (it) => {
             .toBeGreaterThan(0),
         );
         const pid = Number.parseInt(NodeFS.readFileSync(pidFile, "utf8"), 10);
+        // @effect-diagnostics-next-line globalConsoleInEffect:off -- diagnostics for the live repro
+        console.log(`repro: stub pid ${pid}`);
 
         // With the escalation the call returns after its timeout; without it the
         // SIGTERM-ignoring process wedges the cleanup and the call never returns.
@@ -88,9 +92,11 @@ it.layer(NodeServices.layer)("tailscale serve kill repro", (it) => {
           Effect.timeoutOption("14 seconds"),
           Effect.map(Option.isSome),
         );
+        // @effect-diagnostics-next-line globalConsoleInEffect:off -- diagnostics for the live repro
+        console.log(`repro: serve call returned: ${returned}, stub alive: ${isAlive(pid)}`);
         assert.isTrue(returned, `the serve call never returned; process ${pid} wedged the cleanup`);
         assert.isFalse(isAlive(pid), `hung serve process ${pid} survived the call`);
-      }).pipe(Effect.ensuring(killStub));
+      }).pipe(Effect.ensuring(Effect.tap(killStub, () => Effect.log("repro: cleanup done"))));
     }),
   );
 });
