@@ -1,10 +1,12 @@
 import { assert, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Result from "effect/Result";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NodeFS from "node:fs";
 
 import { ensureTailscaleServe } from "./tailscale.ts";
 
@@ -51,31 +53,44 @@ it.layer(NodeServices.layer)("tailscale serve kill repro", (it) => {
       process.env.TAILSCALE_STUB_PID_FILE = pidFile;
       process.env.PATH = `${stubDir}:${process.env.PATH ?? ""}`;
 
-      // Interrupting the serve call runs the spawner's cleanup: SIGTERM to the
-      // process group, then — with forceKillAfter — SIGKILL after the grace.
-      const outcome = yield* ensureTailscaleServe({ localPort: 45_678 }).pipe(
-        Effect.timeout("3 seconds"),
-        Effect.result,
-        Effect.ensuring(
-          Effect.gen(function* () {
-            const text = yield* fs.readFileString(pidFile).pipe(Effect.orElseSucceed(() => ""));
-            const pid = Number.parseInt(text, 10);
-            if (Number.isInteger(pid)) {
-              yield* Effect.try(() => process.kill(pid, "SIGKILL")).pipe(Effect.ignore);
-            }
-            yield* fs.remove(stubDir, { recursive: true }).pipe(Effect.ignore);
-          }),
-        ),
-      );
-      assert.isTrue(Result.isFailure(outcome), "the interrupted serve call must fail");
+      // Kill the stub last so a failed assertion cannot wedge this test on the
+      // hung cleanup the same way the bug wedges the real caller.
+      const killStub = Effect.gen(function* () {
+        const text = yield* fs.readFileString(pidFile).pipe(Effect.orElseSucceed(() => ""));
+        const pid = Number.parseInt(text, 10);
+        if (Number.isInteger(pid)) {
+          yield* Effect.try(() => process.kill(pid, "SIGKILL")).pipe(Effect.ignore);
+        }
+        yield* fs.remove(stubDir, { recursive: true }).pipe(Effect.ignore);
+      });
 
-      const pid = Number.parseInt(yield* fs.readFileString(pidFile), 10);
-      assert.isTrue(Number.isInteger(pid), "the stub must have reported its pid");
+      yield* Effect.gen(function* () {
+        // The serve call's own 10 s timeout interrupts it and runs the spawner's
+        // cleanup: SIGTERM to the process group, then — with forceKillAfter —
+        // SIGKILL after the grace.
+        const fiber = yield* Effect.fork(
+          ensureTailscaleServe({ localPort: 45_678 }).pipe(Effect.result),
+        );
 
-      // Without the escalation the SIGTERM-ignoring process outlives the call.
-      yield* Effect.promise(() =>
-        expect.poll(() => isAlive(pid), { interval: 200, timeout: 4_000 }).toBe(false),
-      );
+        yield* Effect.promise(() =>
+          expect
+            .poll(() => Number.parseInt(NodeFS.readFileSync(pidFile, "utf8"), 10), {
+              interval: 200,
+              timeout: 5_000,
+            })
+            .toBeGreaterThan(0),
+        );
+        const pid = Number.parseInt(NodeFS.readFileSync(pidFile, "utf8"), 10);
+
+        // With the escalation the call returns after its timeout; without it the
+        // SIGTERM-ignoring process wedges the cleanup and the call never returns.
+        const returned = yield* Fiber.join(fiber).pipe(
+          Effect.timeoutOption("14 seconds"),
+          Effect.map(Option.isSome),
+        );
+        assert.isTrue(returned, `the serve call never returned; process ${pid} wedged the cleanup`);
+        assert.isFalse(isAlive(pid), `hung serve process ${pid} survived the call`);
+      }).pipe(Effect.ensuring(killStub));
     }),
   );
 });
