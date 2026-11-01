@@ -1,0 +1,16 @@
+name: tailscale serve kill repro
+on:
+  push:
+    branches:
+      - repro/tailscale-serve-leak
+  workflow_dispatch:
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+      - name: Run the real-process serve-kill repro
+        run: node_modules/.bin/vp test run packages/tailscale/src/serveKillRepro.test.ts
